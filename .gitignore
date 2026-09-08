@@ -284,3 +284,12 @@ output/*
 
 secrets/*
 data/shapefiles.zip
+
+# OSRM health-area matrices (data/osrm/process_health_areas.R).
+# 9720 areas = 94.5M origin-destination pairs, written as ~98 gzipped part
+# files totalling ~1.1 GB, plus a 784K row-order manifest. Regenerable by
+# rerunning the script (~24h against the public OSRM API), so it is kept out
+# of git rather than committed as ~1.1 GB of blobs. Switch to a
+# `data/*/processed/**/*.csv.gz filter=lfs` rule in .gitattributes if these
+# outputs ever need to be distributed with the repo.
+data/osrm/processed/health_areas/
