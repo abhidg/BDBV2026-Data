@@ -4,6 +4,8 @@ Pairwise **driving** travel times and road distances between all health zones in
 
 These matrices support connectivity analyses for outbreak modelling (e.g. gravity-style coupling, accessibility indices, or validation of reported movement patterns).
 
+> **Health-area grain:** a finer companion product routes all **9720 GRID3 health areas** instead of the 519 health zones. Because that is 94.5M origin–destination pairs, it has different outputs, filenames, join key and runtime, and does not use the `.matrix.csv` contract — see **[README_health_areas.md](README_health_areas.md)**. Everything below describes the health-**zone** product only.
+
 ------------------------------------------------------------------------
 
 ## Files
@@ -14,6 +16,7 @@ These matrices support connectivity analyses for outbreak modelling (e.g. gravit
 | `processed/osrm__road_distance__static.csv` | Origin–destination matrix of **car** road distance (kilometres) |
 | `process.R` | Build matrices via the public OSRM Table API |
 | `metadata.yaml` | Provenance, licence, and pipeline notes |
+| `process_health_areas.R` | Health-**area** grain build; see [README_health_areas.md](README_health_areas.md) |
 
 **Dimensions:** 519 × 519 health zones (\~2.7M origin–destination pairs per matrix).\
 **Coverage:** National (all zones in `DRC_Health_zones.shp`).\
