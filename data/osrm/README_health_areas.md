@@ -19,6 +19,7 @@ This deliberately does **not** follow the repo's `<dataset>__<metric>__<resoluti
 | File | Description |
 |----|----|
 | `process_health_areas.R` | Build the matrices via the public OSRM Table API |
+| `check_health_areas.py` | Validate the outputs: coverage, structure, unrouted pairs, geometry (see [Verification](#verification)) |
 | `processed/health_areas/health_area_ids.csv` | Row-order manifest: `row`, `grid3id`, `airesante`, `zonesante`, `province`, `lon`, `lat` (9720 rows, ~784 KB) |
 | `processed/health_areas/osrm__travel_time_road_distance__healthareas.part-NNNNNN-NNNNNN.csv.gz` | 98 gzipped part files, one per block of 100 origins, named by the row range covered (~1.0 GB total) |
 
@@ -136,6 +137,8 @@ nix-shell --run 'Rscript data/osrm/process_health_areas.R'
 nohup nix-shell --run 'Rscript data/osrm/process_health_areas.R' > osrm_health_areas.log 2>&1 &
 ```
 
+Keep that log. The script reports failed tiles only as it goes, and a tile that gives up leaves `NA` behind silently. Always follow a run with [`check_health_areas.py`](#verification), which finds those blocks after the fact and names the parts to re-run.
+
 **Resuming.** A part file is written to `.tmp` and renamed only once complete, so its existence means "done". Re-running the identical command skips finished blocks and picks up where it stopped, losing at most the strip in flight (~15 min). Two guards abort rather than produce a corrupt mixture:
 
 -   the `grid3id` manifest no longer matches the layer (the shapefile changed), or
@@ -175,8 +178,11 @@ The public OSRM server **throttles per request, not per pair.** Measured over ~3
 |----|----|
 | **Modelled, not observed** | Times and distances are road-network estimates, not measured travel. |
 | **Car profile only** | No walking, ferry-specific, or seasonal/impassable-road logic. Much DRC travel is not by car, and the road network is sparse in places. |
-| **Unroutable areas** | Areas the car network does not reach — islands especially — yield `NA`. The zone-grain product has this for Idjwi (island in Lake Kivu); expect the health areas within it, and other lake and forest areas, to behave the same. |
-| **Public API is a moving target** | Re-running may give different values as OSM data and the public instance change. There is no snapshot pinning; a local instance would fix this. |
+| **Unroutable areas** | 504,354 pairs (0.53%) are `NA`, and every one involves the same **26 areas** the car network does not reach. They form two mutually-routable clusters: **19 in Idjwi** (island in Lake Kivu, matching the zone-grain product) and **7 in Bokoro/Oshwe**, Mai-Ndombe. Each routes only within its own cluster, so a 19-area cluster shows 9701 `NA` per row (9720 − 19) and the 7-area cluster 9713. |
+| **Snap collisions understate short distances** | OSRM's Table service snaps to the largest connected road component, so an area whose nearest road is a disconnected fragment is routed from a main-network node far away — one verified case snapped **39 km** from the requested point. Where two areas fall back to the *same* node, the matrix reports ~0 km between them. This affects **296 areas in 116 clusters** (606 ordered pairs under 50 m), the worst spanning **62.5 km** of real ground. Every distance for these 296 areas is measured from the wrong place, not just the near-zero cells. A related symptom is 19,568 pairs whose road distance falls below the great-circle distance. |
+| **Travel time carries little beyond distance** | Implied speeds cluster tightly at 40–70 km/h (91% of pairs; mean ~55), with nothing below 5 km/h. These are OSM `maxspeed`/`highway` tags with no allowance for surface condition, seasonal impassability, ferry waits or borders — so `travel_time_min` is roughly `road_distance_km ÷ 55` and systematically understates real journey time. `road_distance_km` is the more defensible column; its detour ratios behave plausibly (mean ×1.74, 65.6% between ×1.5 and ×2.0). |
+| **A failed tile looks like a genuine `NA`** | A tile that exhausts its 4 retries is left `NA`, indistinguishable from an unroutable pair. The full run hit exactly one (origins 6201–6300 × the same destinations, 10,000 pairs), fixed by deleting that part and re-running. `check_health_areas.py` tells the two apart: anything `NA` that does not involve one of the 26 isolated areas, and that forms a `CHUNK_SIZE` × `CHUNK_SIZE` rectangle, is a routing failure — always re-run it. |
+| **Public API is a moving target** | Re-running may give different values as OSM data and the public instance change. There is no snapshot pinning; a local instance would fix this. Observed directly: a pair stored as 0.028 km / 0 min on 8–9 Sep returned 3.607 km / 8.9 min when re-queried on 11 Sep. |
 | **`point_on_surface` in lon/lat** | Computed in EPSG:4326, which emits an sf warning. Retained for consistency with the zone pipeline; the effect is negligible at health-area size. |
 | **517 zones, not 519** | The health-areas layer names 517 distinct `zonesante` values, while `data/shapefiles/DRC_Health_zones.shp` has 519 zones. Do not assume the two layers' zone sets are identical when aggregating areas up to zones. |
 | **Not comparable to the zone matrices** | The zone product was routed in 2026-03 against a different OSM snapshot. Do not mix grains quantitatively without regenerating both on one snapshot. |
@@ -186,12 +192,32 @@ The public OSRM server **throttles per request, not per pair.** Measured over ~3
 
 ## Verification
 
-The pipeline was checked on a live 250-area subset (62,500 pairs) before the full run:
+**Before the full run**, the pipeline was checked on a live 250-area subset (62,500 pairs):
 
 -   Row count exactly 250², no duplicate `(origin, destination)` pairs, all 250 ids present on both axes.
 -   Diagonal exactly zero for both metrics; no unrouted pairs.
 -   Five cells cross-checked against independent single-pair API queries and matched to the rounded digit — chosen to span tile and block boundaries, where an indexing error would surface.
 -   Resume, chunk-size guard and manifest guard exercised against a stubbed API.
+
+**After a run**, check the real outputs with `check_health_areas.py`, which reads all 94.5M pairs:
+
+``` bash
+nix-shell --run 'python3 data/osrm/check_health_areas.py'
+nix-shell --run 'python3 data/osrm/check_health_areas.py --report qa/reports/osrm_health_areas.md'
+```
+
+Pass `--chunk` if the run used a non-default `OSRM_CHUNK_SIZE`, or failed-tile detection will misreport. Exit code is non-zero if any check fails, so it works as a CI gate. It verifies:
+
+| Stage | Checks |
+|----|----|
+| Manifest | 9720 rows, `grid3id` unique and non-empty, `row` = 1..N, representative points inside a DRC bounding box |
+| Part coverage | ranges contiguous and covering every row exactly once, no leftover `.tmp` files |
+| Structure | per-part row count, origin ids = that block's manifest slice, destination ids = the full manifest, no duplicate pairs, documented row order. Reading each gzip member end-to-end also validates its CRC |
+| Values | diagonal exactly `0,0`, no negatives, no half-written pairs, no implausible speeds |
+| Unrouted | separates the 26 isolated areas from rectangular all-`NA` blocks, printing the `rm` command for any part that needs re-running |
+| Geometry | snap collisions, road distances below great-circle, detour and speed histograms |
+
+**Failures** mean the data is wrong and a re-run will fix it. **Warnings** — snap collisions, impossible-short distances, zero-time pairs — are properties of the public OSRM instance that re-running cannot clear; see the limitations table above. The current outputs pass with 0 failures and 3 warnings.
 
 ------------------------------------------------------------------------
 
